@@ -9,7 +9,7 @@ import (
 )
 
 var usage = template.Must(template.New("").Parse(`docsite is a tool for generating static documentation sites from Markdown files and HTML templates.
-For more information, see https://github.com/sourcegraph/docsite.
+For more information, see https://github.com/prince1809/docsite.
 
 Usage:
 
@@ -37,7 +37,7 @@ var (
 )
 
 var (
-	configPath = commandLine.String("config", "docsite.json"+string(os.PathListSeparator)+filepath.Join("doc", "docsite.json"), "search `paths` for docsite JSON config (see https://github.com/sourcegraph/docsite#site-data)")
+	configPath = commandLine.String("config", "docsite.json"+string(os.PathListSeparator)+filepath.Join("doc", "docsite.json"), "search `paths` for docsite JSON config (see https://github.com/prince1809/docsite#site-data)")
 )
 
 func main() {
