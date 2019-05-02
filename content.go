@@ -12,4 +12,7 @@ type ContentPage struct {
 }
 
 type breadcrumbEntry struct {
+	Label    string
+	URL      string
+	IsActive bool
 }
