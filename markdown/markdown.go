@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"bytes"
 	"context"
 	"net/url"
 
@@ -61,7 +62,7 @@ func NewParser(renderer blackfriday.Renderer) *blackfriday.Markdown {
 	)
 }
 
-// NewBfRenderer creates the default blackfriday renderer to be passed to NewPrser()
+// NewBfRenderer creates the default blackfriday renderer to be passed to NewParser()
 func NewBfRenderer() blackfriday.Renderer {
 	return bfchroma.NewRenderer(
 		bfchroma.ChromaStyle(styles.VisualStudio),
@@ -71,6 +72,17 @@ func NewBfRenderer() blackfriday.Renderer {
 			}),
 		),
 	)
+}
+
+func renderText(node *blackfriday.Node) string {
+	var parts [][]byte
+	node.Walk(func(node *blackfriday.Node, entering bool) blackfriday.WalkStatus {
+		if node.Type == blackfriday.Text {
+			parts = append(parts, node.Literal)
+		}
+		return blackfriday.GoToNext
+	})
+	return string(bytes.Join(parts, nil))
 }
 
 func hasSingleChildOfType(node *blackfriday.Node, typ blackfriday.NodeType) bool {
@@ -86,4 +98,13 @@ func hasSingleChildOfType(node *blackfriday.Node, typ blackfriday.NodeType) bool
 		}
 	}
 	return seenLink
+}
+
+func getFirstChildLink(node *blackfriday.Node) *blackfriday.Node {
+	for child := node.FirstChild; child != nil; child = child.Next {
+		if child.Type == blackfriday.Link {
+			return child
+		}
+	}
+	return nil
 }
