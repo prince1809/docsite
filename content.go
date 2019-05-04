@@ -15,7 +15,7 @@ type ContentPage struct {
 	FilePath    string            // the filename on disk
 	Data        []byte            // the page's file contents
 	Doc         markdown.Document // the Markdown doc
-	BreadCrumbs []breadcrumbEntry // ancestor breadcrumb for this page
+	Breadcrumbs []breadcrumbEntry // ancestor breadcrumb for this page
 }
 
 func contentFilePathToPath(filepath string) string {

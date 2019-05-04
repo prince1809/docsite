@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-func parseTemplate(templateFS http.FileSystem, funcs template.FuncMap) (*template.Template, error) {
+func parseTemplates(templateFS http.FileSystem, funcs template.FuncMap) (*template.Template, error) {
 	tmpl := template.New("root")
 	tmpl.Funcs(funcs)
 

@@ -1,83 +1,154 @@
 package docsite
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"github.com/pkg/errors"
+	"github.com/prince1809/docsite/markdown"
+	"html/template"
 	"net/http"
 	"net/url"
+	pathpkg "path"
 	"regexp"
-	"sync"
-	"time"
+	"strings"
 )
-
-// VersionedFileSystem represents multiple version of an http.FileSystem.
+// VersionedFileSystem represents multiple versions of an http.FileSystem.
 type VersionedFileSystem interface {
 	OpenVersion(ctx context.Context, version string) (http.FileSystem, error)
 }
 
 // Site represents a documentation site, including all of its templates, assets, and content.
 type Site struct {
-	// Content is the versioned file system containing the Markdown files and assets (e.g. images)
+	// Content is the versioned file system containing the Markdown files and assets (e.g., images)
 	// embedded in them.
 	Content VersionedFileSystem
 
 	// Base is the base URL (typically including only the path, such as "/" or "/help/") where the
-	// site is avilable
+	// site is available.
 	Base *url.URL
 
-	// Templates is the file system containing the go html/template templates used to render site
-	// page
+	// Templates is the file system containing the Go html/template templates used to render site
+	// pages
 	Templates http.FileSystem
 
-	// Assets it the file system containing the site-wide static asset files (e.g., global styles
+	// Assets is the file system containing the site-wide static asset files (e.g., global styles
 	// and logo).
 	Assets http.FileSystem
 
-	// AssetBase is the base URL (sometimg only including the path, such as "/assets/") where the
+	// AssetsBase is the base URL (sometimes only including the path, such as "/assets/") where the
 	// assets are available.
-	AssetBase *url.URL
+	AssetsBase *url.URL
 
-	// CheckIgnoreURLPattern is a regex matching URLs to ignore in the check method.
+	// CheckIgnoreURLPattern is a regexp matching URLs to ignore in the Check method.
 	CheckIgnoreURLPattern *regexp.Regexp
 }
 
-// docsiteConfig is the shape of docsite.json
-//
-// See ["Site data" in README.md](../../README.md#site-data) for documentation on this type's
-// fields.
-type dockSiteConfig struct {
-	Content           string
-	BaseURLPath       string
-	Templates         string
-	Assets            string
-	AssetsBaseURLPath string
-	Check             struct {
-		IgnoreURLPattern string
+// newContentPage creates a new ContentPage in the site.
+func (s *Site) newContentPage(ctx context.Context, filePath string, data []byte, contentVersion string) (*ContentPage, error) {
+	var urlPathPrefix string
+	if contentVersion != "" {
+		urlPathPrefix = "/@" + contentVersion + "/"
 	}
+	urlPathPrefix = pathpkg.Join(urlPathPrefix, strings.TrimPrefix(pathpkg.Dir(filePath)+"/", "/"))
+	if urlPathPrefix != "" {
+		urlPathPrefix += "/"
+	}
+
+	base := s.Base
+	if base == nil {
+		base = &url.URL{Path: "/"}
+	}
+
+	path := contentFilePathToPath(filePath)
+	doc, err := markdown.Run(ctx, data, markdown.Options{
+		Base:                      base.ResolveReference(&url.URL{Path: urlPathPrefix}),
+		ContentFilePathToLinkPath: contentFilePathToPath,
+		Funcs:                     createMarkdownFuncs(s),
+		FuncInfo:                  markdown.FuncInfo{Version: contentVersion},
+	})
+	if err != nil {
+		return nil, errors.WithMessage(err, fmt.Sprintf("run Markdown for %s", filePath))
+	}
+	return &ContentPage{
+		Path:        path,
+		FilePath:    filePath,
+		Data:        data,
+		Doc:         *doc,
+		Breadcrumbs: makeBreadcrumbEntries(path),
+	}, nil
 }
 
-type nonVersionedFileSystem struct{ http.FileSystem }
+// AllContentPages returns a list of all content pages in the site.
+func (s *Site) AllContentPages(ctx context.Context, contentVersion string) ([]*ContentPage, error) {
+	content, err := s.Content.OpenVersion(ctx, contentVersion)
+	if err != nil {
+		return nil, err
+	}
 
-type versionedFileSystemURL struct {
-	url   string
-	mu    sync.Mutex
-	cache map[string]fileSystemCacheEntry
+	var pages []*ContentPage
+	err = WalkFileSystem(content, isContentPage, func(path string) error {
+		data, err := ReadFile(content, path)
+		if err != nil {
+			return err
+		}
+		page, err := s.newContentPage(ctx, path, data, contentVersion)
+		if err != nil {
+			return err
+		}
+		pages = append(pages, page)
+		return nil
+	})
+	return pages, err
 }
 
-type fileSystemCacheEntry struct {
-	fs http.FileSystem
-	at time.Time
+// ResolveContentPage looks up the content page at the given version and path (which generally comes
+// from a URL). The path may omit the ".md" file extension and the "/index" or "/index.md" suffix.
+//
+// If the resulting ContentPage differs from the path argument, the caller should (if possible)
+// communicate a redirect.
+func (s *Site) ResolveContentPage(ctx context.Context, contentVersion, path string) (*ContentPage, error) {
+	content, err := s.Content.OpenVersion(ctx, contentVersion)
+	if err != nil {
+		return nil, err
+	}
+	filePath, data, err := resolveAndReadAll(content, path)
+	if err != nil {
+		return nil, err
+	}
+	return s.newContentPage(ctx, filePath, data, contentVersion)
 }
 
-const fileSystemCacheTTL = 5 * time.Minute
-
-// PageData is the data avialable to the HTML template used to render a page.
+// PageData is the data available to the HTML template used to render a page.
 type PageData struct {
-	CurrentVersion  string // content version string requested
-	ContentPagePath string // content path page requested
+	ContentVersion  string // content version string requested
+	ContentPagePath string // content page path requested
 
 	ContentVersionNotFoundError bool // whether the requested version was not found
-	ContentPageNotFoundError    bool // Whether the requested content page was not found
+	ContentPageNotFoundError    bool // whether the requested content page was not found
 
 	// Content is the content page, when it is found.
 	Content *ContentPage
+}
+
+// RenderContentPage renders a content page using the template.
+func (s *Site) RenderContentPage(page *PageData) ([]byte, error) {
+	funcs := template.FuncMap{
+		"asset": func(path string) string {
+			return s.AssetsBase.ResolveReference(&url.URL{Path: path}).String()
+		},
+		"markdown": func(page ContentPage) template.HTML {
+			return template.HTML(page.Doc.HTML)
+		},
+	}
+	tmpl, err := parseTemplates(s.Templates, funcs)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, page); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
